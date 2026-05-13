@@ -10,59 +10,87 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # ==========================================
     # 1. 获取代码
+    # ==========================================
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
         ref: release-2.0.0
         submodules: true
 
-    # 2. 开启 QEMU 模拟
+    # ==========================================
+    # 2. 开启 QEMU 模拟 ARM64
+    # ==========================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
       with:
         platforms: arm64
 
-    # 3. 编译与打包
-    - name: Build in Docker
+    # ==========================================
+    # 3. 编译与打包 (修复版)
+    # ==========================================
+    - name: Build and Package
       run: |
-        # 使用 arm64v8/ubuntu 镜像
         docker run --rm -t \
           --platform linux/arm64 \
           -v ${{ github.workspace }}:/src \
-          -w /src \
+          -w /src/build \
           arm64v8/ubuntu:22.04 \
           /bin/bash -c "
-            # --- 1. 安装依赖 ---
-            apt-get update && apt-get install -y \
-              cmake \
-              make \
-              g++ \
-              libssl-dev \
-              libcurl4-openssl-dev \
-              zlib1g-dev \
-              wget \
-              dpkg-dev \
-              debhelper \
-              fakeroot \
-            && rm -rf /var/lib/apt/lists/*
+            set -e
 
-            # --- 2. 编译 ---
-            cd /src
-            mkdir -p build && cd build
-            cmake .. -DCMAKE_BUILD_TYPE=Release
+            # --- 1. 环境准备 ---
+            echo 'Updating apt...'
+            apt-get update
+
+            echo 'Installing dependencies...'
+            # 加上 --no-install-recommends 加快安装速度，避免安装不必要的包
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                cmake \
+                make \
+                g++ \
+                libssl-dev \
+                libcurl4-openssl-dev \
+                libjsoncpp-dev \
+                uuid-dev \
+                cpio \
+                rpm \
+                dpkg-dev
+
+            # --- 2. 权限修复 ---
+            echo 'Fixing permissions...'
+            # 确保源码目录下的所有脚本都有执行权限，防止 preinstall 因权限报错
+            chmod +x /src/cmake/*.sh || true
+            chmod +x /src/scripts/*.sh || true
+            chmod +x /src/tools/*.sh || true
+
+            # --- 3. CMake 配置 ---
+            echo 'Running CMake...'
+            # 显式指定安装前缀
+            cmake .. \
+                -DCMAKE_INSTALL_PREFIX=/usr \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_STATIC_LIBS=OFF
+
+            # --- 4. 编译 ---
+            echo 'Compiling...'
             make -j$(nproc)
 
-            # --- 3. 修复并打包 (关键修改在这里) ---
-            # 我们添加 -D CPACK_DEBIAN_PACKAGE_PREINSTALL_SCRIPT=/dev/null 来跳过那个报错的脚本
-            cpack -G DEB -D CPACK_DEBIAN_PACKAGE_PREINSTALL_SCRIPT=/dev/null
+            # --- 5. 打包 (核心修复点) ---
+            echo 'Packaging DEB...'
+            cpack -G DEB \
+                -D CPACK_DEBIAN_PACKAGE_PREINSTALL_SCRIPT=/dev/null \
+                -D CPACK_DEBIAN_PACKAGE_POSTINSTALL_SCRIPT=/dev/null
           "
 
+    # ==========================================
     # 4. 上传构件
+    # ==========================================
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: rocketmq-client-cpp-deb
+        name: rocketmq-deb-package
         path: |
-          *.deb
-          build/*.deb
+          **/*.deb
+          **/*.rpm
