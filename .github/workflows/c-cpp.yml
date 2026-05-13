@@ -1,0 +1,58 @@
+name: Build RocketMQ ARM64 DEB
+
+on:
+  push:
+    branches: ["release-2.0.0" ]
+  workflow_dispatch: # 允许在网页上手动点击运行
+
+jobs:
+  build:
+    # 使用 ubuntu-latest，GitHub 会自动分配 ARM64 的 runner
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 拉取代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 安装编译所需的系统依赖
+      # 结合之前的实战经验，补充了 ARM 编译容易缺失的依赖
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            autoconf \
+            automake \
+            libtool \
+            zlib1g-dev \
+            libbz2-dev \
+            perl
+
+      # 3. 修复 CMakeLists.txt 中的 -m64 参数（ARM 编译避坑）
+      # 官方脚本常会强加 -m64 导致 ARM 编译失败，这里用 sed 命令直接注释掉
+      - name: Fix CMakeLists for ARM64
+        run: |
+          sed -i 's/list(APPEND CXX_FLAGS "-m64")/#list(APPEND CXX_FLAGS "-m64")/g' CMakeLists.txt
+
+      # 4. 执行编译
+      - name: Build RocketMQ Client
+        run: |
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc)
+
+      # 5. 生成 .deb 包
+      - name: Create DEB package
+        run: |
+          cd build
+          cpack
+
+      # 6. 上传编译产物
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocketmq-client-cpp-2.0.0-arm64
+          path: build/*.deb
