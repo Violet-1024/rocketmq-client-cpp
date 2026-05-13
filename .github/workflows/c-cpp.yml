@@ -28,40 +28,55 @@ jobs:
         platforms: arm64
 
     # ==========================================
-    # 3. 编译与打包 (修复内存溢出)
+    # 3. 修复代码 & 编译打包
     # ==========================================
-    - name: Build in Docker
+    - name: Build and Package
       run: |
+        # 定义要执行的脚本
+        cat << 'EOF' > build.sh
+        #!/bin/bash
+        set -e
+
+        echo "=== 1. 修复 CMakeLists.txt (移除不兼容的 -m64 参数) ==="
+        # 全局搜索 CMakeLists.txt 并删除 -m64
+        find . -name "CMakeLists.txt" -exec sed -i 's/-m64//g' {} +
+        # 检查是否还有硬编码的机器类型设置，如果有也注释掉
+        sed -i 's/set(CMAKE_SIZEOF_VOID_P 8)/# set(CMAKE_SIZEOF_VOID_P 8)/g' CMakeLists.txt
+
+        echo "=== 2. 创建构建目录 ==="
+        mkdir -p build
+        cd build
+
+        echo "=== 3. 运行 CMake 配置 ==="
+        # 注意：这里不需要 -m64 参数
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DBUILD_SHARED_LIBS=ON
+
+        echo "=== 4. 开始编译 (限制线程防止内存溢出) ==="
+        # 使用 -j2 防止 GitHub Action 内存溢出
+        make -j2
+
+        echo "=== 5. 打包 DEB ==="
+        # 生成 DEB 包
+        cpack -G DEB
+
+        echo "=== 6. 准备产出物 ==="
+        # 将生成的 deb 包复制到根目录方便上传
+        cp *.deb ../
+        EOF
+
+        # 赋予执行权限
+        chmod +x build.sh
+
+        # 在 ARM64 Ubuntu 环境中运行脚本
         docker run --rm -t \
           --platform linux/arm64 \
-          -v ${{ github.workspace }}:/src \
-          -w /src/build \
+          -v $PWD:/src \
+          -w /src \
           arm64v8/ubuntu:22.04 \
-          /bin/bash -c "
-            set -e
-
-            echo '=== 1. 安装依赖 ==='
-            apt-get update
-            # 安装编译工具和库，注意这里不再尝试安装不存在的cpack包
-            DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                cmake make g++ gcc libssl-dev libcurl4-openssl-dev \
-                zlib1g-dev libjansson-dev uuid-dev pkg-config
-
-            echo '=== 2. 修复权限 ==='
-            chmod +x /src/scripts/*.sh || true
-
-            echo '=== 3. 生成 Makefile ==='
-            # 这里使用默认配置，如果有特殊CMAKE参数可以在这里加
-            cmake ..
-
-            echo '=== 4. 开始编译 (限制线程防止内存溢出) ==='
-            # 关键修复：使用 -j2 限制并发，防止 GitHub Actions 内存溢出
-            make -j2
-
-            echo '=== 5. 生成 DEB 包 ==='
-            # 直接运行 cpack，不再带错误的预安装参数
-            cpack -G DEB
-          "
+          /bin/bash /src/build.sh
 
     # ==========================================
     # 4. 上传产物
@@ -69,7 +84,5 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: rocketmq-client-cpp-deb
-        path: |
-          ${{ github.workspace }}/build/*.deb
-          ${{ github.workspace }}/build/*.rpm
+        name: rocketmq-client-cpp-arm64
+        path: "*.deb"
