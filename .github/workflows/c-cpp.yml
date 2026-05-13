@@ -1,0 +1,61 @@
+name: 2.0.0 ARM64 DEB
+
+# 修改这里：指定监听 release-2.0.0 分支
+on:
+  push:
+    branches: [ "release-2.0.0" ]
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  build:
+    # 使用 ubuntu-latest，GitHub 会自动分配 ARM  runner (如果是 self-hosted)
+    # 但 GitHub 官方托管的 ubuntu-latest 默认是 x64。
+    # **重点**：要在 GitHub 官方免费环境编译 ARM，需要使用 qemu 模拟 或者 指定 arm64 runner
+    # 下面的配置使用了 qemu 来在 x64 环境下模拟 arm64 编译（最通用的免费方案）
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. 检出代码
+    # 注意：确保你的仓库默认分支或者你推送的分支是 release-2.0.0
+    # 如果你是手动运行，它会自动拉取 release-2.0.0
+    - uses: actions/checkout@v4
+      with:
+        ref: release-2.0.0 # 强制指定拉取 release-2.0.0 分支
+        submodules: true   # 必须：RocketMQ 依赖子模块
+
+    # 2. 设置 QEMU (关键步骤：让 x64 机器能编译 ARM64)
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    # 3. 安装依赖 (在 ARM64 环境下)
+    # 我们使用 docker 来提供一个纯净的 ARM64 Ubuntu 环境进行编译
+    - name: Build in ARM64 Docker Container
+      uses: addnab/docker-run-action@v3
+      with:
+        image: arm64v8/ubuntu:22.04
+        options: -v ${{ github.workspace }}:/src -w /src
+        run: |
+          # --- 在容器内执行以下命令 ---
+          
+          # 1. 更新源并安装依赖
+          apt-get update
+          apt-get install -y cmake g++ make libssl-dev libcurl4-openssl-dev libjsoncpp-dev pkg-config
+          
+          # 2. 创建构建目录
+          mkdir -p build
+          cd build
+          
+          # 3. CMake 配置 (指定生成器为 DEB)
+          # 注意：这里假设你已经在源码根目录的 CMakeLists.txt 末尾添加了 CPack 配置
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCPACK_GENERATOR="DEB"
+          
+          # 4. 编译
+          make -j$(nproc)
+          
+          # 5. 打包 (生成 .deb)
+          cpack -G DEB
+          
+          # 6. 将生成的包复制到挂载目录，方便 GitHub 获取
+          cp *.deb /src/
