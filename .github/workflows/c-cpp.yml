@@ -3,7 +3,7 @@ name: Build RocketMQ ARM64 DEB
 on:
   push:
     branches: [ "release-2.0.0" ]
-  workflow_dispatch: # 允许手动点击运行
+  workflow_dispatch:
 
 jobs:
   build-deb:
@@ -28,18 +28,17 @@ jobs:
         platforms: arm64
 
     # ==========================================
-    # 3. 编译与打包 (完整依赖 + 终极修复)
+    # 3. 编译与打包 (补全 Boost 等所有依赖)
     # ==========================================
     - name: Build and Package
       run: |
-        # 定义容器内执行的完整脚本
         cat << 'EOF' > build.sh
         #!/bin/bash
         set -e
 
-        echo "=== 1. 更新源并安装所有依赖 (apt install) ==="
+        echo "=== 1. 更新源并安装所有依赖 (包含 Boost 库) ==="
         apt-get update
-        # 补全了所有编译 RocketMQ 必须的依赖库和工具
+        # 补全了 libboost-all-dev 以及 RocketMQ 编译必须的依赖库
         DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cmake \
             make \
@@ -55,7 +54,10 @@ jobs:
             git \
             dpkg-dev \
             cpio \
-            rpm
+            rpm \
+            libboost-all-dev \
+            libevent-dev \
+            libjsoncpp-dev
 
         echo "=== 2. 修复源码中的 -m64 参数 (解决 ARM 编译报错) ==="
         # 全局搜索 CMakeLists.txt 并删除不兼容的 -m64 参数
