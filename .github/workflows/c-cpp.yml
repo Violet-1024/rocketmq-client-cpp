@@ -28,7 +28,7 @@ jobs:
         platforms: arm64
 
     # ==========================================
-    # 3. 编译与打包 (终极修复 Boost 版本不兼容)
+    # 3. 编译与打包 (手动安装旧版 Boost 1.58.0)
     # ==========================================
     - name: Build and Package
       run: |
@@ -36,8 +36,9 @@ jobs:
         #!/bin/bash
         set -e
 
-        echo "=== 1. 更新源并安装所有依赖 ==="
+        echo "=== 1. 更新源并安装基础依赖 ==="
         apt-get update
+        # 注意：这里不再安装 libboost-all-dev，我们将手动安装旧版
         DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cmake \
             make \
@@ -54,27 +55,33 @@ jobs:
             dpkg-dev \
             cpio \
             rpm \
-            libboost-all-dev \
             libevent-dev \
             libjsoncpp-dev \
             libapr1-dev \
             libaprutil1-dev \
-            liblog4cxx-dev
+            liblog4cxx-dev \
+            python3 \
+            bzip2
 
-        echo "=== 2. 修复 JsonCpp 头文件路径 ==="
+        echo "=== 2. 手动下载并编译安装旧版 Boost 1.58.0 ==="
+        cd /tmp
+        wget https://sourceforge.net/projects/boost/files/boost/1.58.0/boost_1_58_0.tar.gz
+        tar -xzf boost_1_58_0.tar.gz
+        cd boost_1_58_0
+        # 配置并编译安装 Boost (这一步在 ARM64 模拟环境下可能需要几分钟)
+        ./bootstrap.sh --prefix=/usr
+        ./b2 install --with=all -j2
+        
+        # 清理临时文件
+        cd /tmp && rm -rf boost_1_58_0.tar.gz boost_1_58_0
+        cd /src
+
+        echo "=== 3. 修复 JsonCpp 头文件路径 ==="
         ln -sf /usr/include/jsoncpp/json /usr/include/json
 
-        echo "=== 3. 修复源码中的 -m64 参数 (解决 ARM 编译报错) ==="
+        echo "=== 4. 修复源码中的 -m64 参数 (解决 ARM 编译报错) ==="
         find . -name "CMakeLists.txt" -exec sed -i 's/-m64//g' {} +
         sed -i 's/set(CMAKE_SIZEOF_VOID_P 8)/# set(CMAKE_SIZEOF_VOID_P 8)/g' CMakeLists.txt
-
-        echo "=== 4. 终极修复 Boost 版本不兼容问题 ==="
-        # 创建软链接，让旧版路径 boost/detail 直接指向新版路径 boost/endian
-        # 这样无论源码里包含的是旧版还是新版头文件，都能顺利找到
-        ln -sf /usr/include/boost/endian /usr/include/boost/detail
-        
-        # 按照新版 Boost 的要求，定义宏来启用废弃的接口
-        export CXXFLAGS="-DBOOST_ENDIAN_DEPRECATED_NAMES"
 
         echo "=== 5. 修复脚本执行权限 ==="
         chmod +x /src/scripts/*.sh || true
@@ -83,11 +90,11 @@ jobs:
         echo "=== 6. 运行 CMake 配置 ==="
         mkdir -p build
         cd build
+        # 使用旧版 Boost 后，不再需要那些复杂的兼容性宏定义了
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX=/usr \
-          -DBUILD_SHARED_LIBS=ON \
-          -DCMAKE_CXX_FLAGS="-DBOOST_ENDIAN_DEPRECATED_NAMES"
+          -DBUILD_SHARED_LIBS=ON
 
         echo "=== 7. 开始编译 (限制线程防止内存溢出) ==="
         make -j2
