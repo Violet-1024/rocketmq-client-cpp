@@ -38,7 +38,7 @@ jobs:
 
         echo "=== 1. 更新源并安装所有依赖 ==="
         apt-get update
-        # 补全了 RocketMQ 编译所需的全套依赖（apr, log4cxx, jsoncpp 等）
+        # 补全了 RocketMQ 编译所需的全套依赖（包括 zlib）
         DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cmake \
             make \
@@ -82,7 +82,8 @@ jobs:
         cmake .. \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX=/usr \
-          -DBUILD_SHARED_LIBS=ON
+          -DBUILD_SHARED_LIBS=ON \
+          -DCMAKE_CXX_FLAGS="-include boost/endian/endian.hpp"
 
         echo "=== 6. 开始编译 (限制线程防止内存溢出) ==="
         # 使用 -j2 限制并发，防止 GitHub Actions 虚拟机内存爆满导致 Error 2
