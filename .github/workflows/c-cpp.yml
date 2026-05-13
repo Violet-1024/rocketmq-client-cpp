@@ -28,7 +28,7 @@ jobs:
         platforms: arm64
 
     # ==========================================
-    # 3. 编译与打包 (补全 Boost 等所有依赖)
+    # 3. 编译与打包 (终极依赖补全 + 路径修复)
     # ==========================================
     - name: Build and Package
       run: |
@@ -36,9 +36,9 @@ jobs:
         #!/bin/bash
         set -e
 
-        echo "=== 1. 更新源并安装所有依赖 (包含 Boost 库) ==="
+        echo "=== 1. 更新源并安装所有依赖 ==="
         apt-get update
-        # 补全了 libboost-all-dev 以及 RocketMQ 编译必须的依赖库
+        # 补全了 RocketMQ 编译所需的全套依赖（apr, log4cxx, jsoncpp 等）
         DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cmake \
             make \
@@ -57,19 +57,26 @@ jobs:
             rpm \
             libboost-all-dev \
             libevent-dev \
-            libjsoncpp-dev
+            libjsoncpp-dev \
+            libapr1-dev \
+            libaprutil1-dev \
+            liblog4cxx-dev
 
-        echo "=== 2. 修复源码中的 -m64 参数 (解决 ARM 编译报错) ==="
+        echo "=== 2. 修复 JsonCpp 头文件路径 (解决 json/json.h 找不到的问题) ==="
+        # 创建软链接，让编译器能通过 #include "json/json.h" 找到系统里的 JsonCpp 头文件
+        ln -sf /usr/include/jsoncpp/json /usr/include/json
+
+        echo "=== 3. 修复源码中的 -m64 参数 (解决 ARM 编译报错) ==="
         # 全局搜索 CMakeLists.txt 并删除不兼容的 -m64 参数
         find . -name "CMakeLists.txt" -exec sed -i 's/-m64//g' {} +
         # 移除可能导致冲突的硬编码指针大小设置
         sed -i 's/set(CMAKE_SIZEOF_VOID_P 8)/# set(CMAKE_SIZEOF_VOID_P 8)/g' CMakeLists.txt
 
-        echo "=== 3. 修复脚本执行权限 ==="
+        echo "=== 4. 修复脚本执行权限 ==="
         chmod +x /src/scripts/*.sh || true
         chmod +x /src/cmake/*.sh || true
 
-        echo "=== 4. 运行 CMake 配置 ==="
+        echo "=== 5. 运行 CMake 配置 ==="
         mkdir -p build
         cd build
         cmake .. \
@@ -77,17 +84,17 @@ jobs:
           -DCMAKE_INSTALL_PREFIX=/usr \
           -DBUILD_SHARED_LIBS=ON
 
-        echo "=== 5. 开始编译 (限制线程防止内存溢出) ==="
+        echo "=== 6. 开始编译 (限制线程防止内存溢出) ==="
         # 使用 -j2 限制并发，防止 GitHub Actions 虚拟机内存爆满导致 Error 2
         make -j2
 
-        echo "=== 6. 生成 DEB 包 (终极修复 preinstall 报错) ==="
+        echo "=== 7. 生成 DEB 包 (终极修复 preinstall 报错) ==="
         # 强制禁用 preinstall 和 postinstall 脚本，彻底解决 CPack 打包阶段的权限报错
         cpack -G DEB \
           -D CPACK_DEBIAN_PACKAGE_PREINSTALL_SCRIPT=/dev/null \
           -D CPACK_DEBIAN_PACKAGE_POSTINSTALL_SCRIPT=/dev/null
 
-        echo "=== 7. 准备产出物 ==="
+        echo "=== 8. 准备产出物 ==="
         # 将生成的 deb 包复制到挂载的根目录，方便 GitHub 抓取
         cp *.deb /src/
         EOF
