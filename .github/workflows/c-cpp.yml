@@ -1,61 +1,80 @@
-name: 2.0.0 ARM64 DEB
+name: Build RocketMQ ARM64 DEB-2.0.0
 
-# 修改这里：指定监听 release-2.0.0 分支
 on:
   push:
     branches: [ "release-2.0.0" ]
   workflow_dispatch: # 允许手动点击运行
 
 jobs:
-  build:
-    # 使用 ubuntu-latest，GitHub 会自动分配 ARM  runner (如果是 self-hosted)
-    # 但 GitHub 官方托管的 ubuntu-latest 默认是 x64。
-    # **重点**：要在 GitHub 官方免费环境编译 ARM，需要使用 qemu 模拟 或者 指定 arm64 runner
-    # 下面的配置使用了 qemu 来在 x64 环境下模拟 arm64 编译（最通用的免费方案）
+  build-deb:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. 检出代码
-    # 注意：确保你的仓库默认分支或者你推送的分支是 release-2.0.0
-    # 如果你是手动运行，它会自动拉取 release-2.0.0
-    - uses: actions/checkout@v4
+    # ==========================================
+    # 1. 获取代码
+    # ==========================================
+    - name: Checkout Code
+      uses: actions/checkout@v4
       with:
-        ref: release-2.0.0 # 强制指定拉取 release-2.0.0 分支
-        submodules: true   # 必须：RocketMQ 依赖子模块
+        ref: release-2.0.0
+        submodules: true # 必须：RocketMQ 包含子模块
 
-    # 2. 设置 QEMU (关键步骤：让 x64 机器能编译 ARM64)
+    # ==========================================
+    # 2. 修复报错的关键步骤：开启 QEMU 模拟
+    # ==========================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
       with:
         platforms: arm64
 
-    # 3. 安装依赖 (在 ARM64 环境下)
-    # 我们使用 docker 来提供一个纯净的 ARM64 Ubuntu 环境进行编译
-    - name: Build in ARM64 Docker Container
+    # ==========================================
+    # 3. 编译与打包 (在 ARM64 环境中运行)
+    # ==========================================
+    - name: Build and Package in ARM64 Container
       uses: addnab/docker-run-action@v3
       with:
+        # 指定平台为 arm64，解决 "no matching manifest" 报错
+        options: |
+          --platform linux/arm64
+          -v ${{ github.workspace }}:/src
+          -w /src
         image: arm64v8/ubuntu:22.04
-        options: -v ${{ github.workspace }}:/src -w /src
         run: |
-          # --- 在容器内执行以下命令 ---
+          # --- 容器内执行的脚本开始 ---
           
-          # 1. 更新源并安装依赖
+          # 1. 更新源并安装依赖 (编译工具 + RocketMQ 依赖 + CPack 打包工具)
+          echo "Installing dependencies..."
           apt-get update
-          apt-get install -y cmake g++ make libssl-dev libcurl4-openssl-dev libjsoncpp-dev pkg-config
-          
-          # 2. 创建构建目录
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git cmake make g++ gcc \
+            libssl-dev libcurl4-openssl-dev \
+            libjsoncpp-dev libpulse-dev \
+            zlib1g-dev \
+            cpack # CPack 工具用于生成 deb 包
+
+          # 2. 编译源码
+          echo "Building RocketMQ Client..."
           mkdir -p build
           cd build
-          
-          # 3. CMake 配置 (指定生成器为 DEB)
-          # 注意：这里假设你已经在源码根目录的 CMakeLists.txt 末尾添加了 CPack 配置
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DCPACK_GENERATOR="DEB"
-          
-          # 4. 编译
+          cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j$(nproc)
-          
-          # 5. 打包 (生成 .deb)
+
+          # 3. 生成 DEB 包
+          echo "Packaging DEB..."
+          # cpack 会自动读取 CMakeLists.txt 中的配置生成 .deb 文件
           cpack -G DEB
+
+          # 4. 整理产物 (把生成的包复制到源码根目录，方便 GitHub 抓取)
+          echo "Copying artifact..."
+          cp *.deb /src/rocketmq-client-cpp-2.0.0-Linux-arm64.deb
           
-          # 6. 将生成的包复制到挂载目录，方便 GitHub 获取
-          cp *.deb /src/
+          # --- 容器内执行的脚本结束 ---
+
+    # ==========================================
+    # 4. 上传产物
+    # ==========================================
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rocketmq-client-cpp-2.0.0-arm64
+        path: rocketmq-client-cpp-2.0.0-Linux-arm64.deb
