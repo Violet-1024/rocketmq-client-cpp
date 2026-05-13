@@ -246,4 +246,15 @@ if (RUN_UNIT_TEST)
     enable_testing()
     add_subdirectory(test)
 endif ()
-
+# 设置打包生成器为 DEB
+set(CPACK_GENERATOR "DEB")
+# 设置生成的 deb 包名称
+set(CPACK_PACKAGE_NAME "rocketmq-client-cpp")
+# 设置版本号
+set(CPACK_PACKAGE_VERSION "2.0.0")
+# 设置架构（GitHub Actions 运行时会自动识别为 aarch64）
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+# 设置简短描述
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "RocketMQ C++ Client for ARM64 Ubuntu")
+# 引入 CPack 模块
+include(CPack)
