@@ -1,78 +1,134 @@
-name: Build RocketMQ Client CPP (ARM64)
+name: Build RocketMQ Client CPP (ARM64 DEB)
 
 on:
-  workflow_dispatch: # 允许手动触发
   push:
-    branches: [ release-2.0.0 ]
+    branches: [release-2.0.0] # 仅在 release-2.0.0 分支推送时触发
+  workflow_dispatch:          # 允许手动点击运行
 
 jobs:
   build-arm64-deb:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. 拉取代码
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # 2. 设置 QEMU 和 Docker Buildx (用于模拟 ARM64 环境)
+      - name: Set up QEMU and Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/arm64
 
-      - name: Build and Package in ARM64 Container
+      # 3. 构建 ARM64 包
+      - name: Build in ARM64 Container
         run: |
-          mkdir -p output
+          mkdir -p ${{ github.workspace }}/output
 
-          docker run --rm --platform linux/arm64 \
+          docker run --rm \
+            --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
-            -v ${{ github.workspace }}/output:/output \
-            ubuntu:22.04 bash -c '
-              set -e
-              echo "=== 1. Install System Dependencies ==="
-              apt-get update && apt-get install -y \
-                wget build-essential cmake autoconf automake libtool \
-                zlib1g-dev libbz2-dev perl pkg-config
+            -w /workspace \
+            ubuntu:22.04 \
+            bash -e <<'EOF'
+              set -ex
 
-              cd /workspace
+              # ============================================================
+              # A. 安装系统级编译依赖
+              # ============================================================
+              apt-get update
+              apt-get install -y build-essential cmake wget git zlib1g-dev libcurl4-openssl-dev dpkg-dev fakeroot
 
-              echo "=== 2. Patch Source Code (The Magic Happens Here) ==="
-              # --- 修改 build.sh ---
-              # 将 Boost 版本升级为 1.72.0
-              sed -i "s/BOOST_VERSION=\"1_58_0\"/BOOST_VERSION=\"1_72_0\"/g" build.sh
-              # 更新下载链接 (SourceForge 自动跳转链接)
-              sed -i "s|projects/boost/files/boost/1.58.0/|projects/boost/files/boost/1.72.0/|g" build.sh
-              sed -i "s|boost_1_58_0.tar.gz|boost_1_72_0.tar.gz|g" build.sh
+              # ============================================================
+              # B. 【关键】替换 Boost 1.58.0 为 1.72.0
+              # ============================================================
+              echo ">>> Pre-downloading Boost 1.72.0 to bypass script..."
+              cd dependencies || mkdir dependencies && cd dependencies
 
-              # --- 修改 CMakeLists.txt ---
-              # 去除 -m64 参数，防止 ARM64 编译报错
-              sed -i "/-m64/s/^/#/" CMakeLists.txt
+              # 下载新版 Boost
+              wget https://boostorg.jfrog.io/artifactory/main/release/1.72.0/source/boost_1_72_0.tar.gz
 
-              echo "=== 3. Run Build Script ==="
-              # 执行修改后的脚本，它会自动下载新版 Boost 并编译
-              sh build.sh all
+              # 解压新版
+              tar -xzf boost_1_72_0.tar.gz
 
-              echo "=== 4. Create DEB Package ==="
-              # 进入构建目录打包
-              cd output
-              # 假设 build.sh 把产物放在了当前目录的 output 文件夹，或者你需要根据实际路径调整
-              # 这里模拟 cpack 打包过程 (如果 build.sh 没自带打包功能)
-              # 注意：rocketmq-client-cpp 原生可能不带 cpack，需要自己写简单的 deb 控制文件
-              # 为了演示，这里假设我们只提取 .so 文件
-              mkdir -p /tmp/deb/usr/lib
-              cp lib/librocketmq.so /tmp/deb/usr/lib/
+              # 【核心技巧】创建一个指向新版本的符号链接，名字必须是旧的
+              # 这样 build.sh 检测到文件存在，就会直接使用这个目录
+              ln -s boost_1_72_0 boost_1_58_0
 
-              # 创建简单的 control 文件
-              mkdir -p /tmp/deb/DEBIAN
-              cat > /tmp/deb/DEBIAN/control <<EOF
-              Package: rocketmq-client-cpp
-              Version: 2.0.0-arm64
-              Architecture: arm64
-              Maintainer: CI Bot
-              Description: RocketMQ C++ Client Library
-              EOF
+              ls -la # 确认链接已创建
 
-              dpkg-deb --build /tmp/deb /output/rocketmq-client-cpp-2.0.0-arm64.deb
-            '
+              cd .. # 回到根目录
 
+              # ============================================================
+              # C. 修改 build.sh 移除 -m64 参数
+              # ============================================================
+              echo ">>> Patching build.sh to remove -m64 flag..."
+              # 将所有的 -m64 替换为空字符串，避免 ARM64 报错
+              sed -i 's/-m64//g' build.sh
+
+              # ============================================================
+              # D. 执行编译脚本
+              # ============================================================
+              echo ">>> Starting build.sh..."
+              chmod +x build.sh
+              ./build.sh
+
+              # ============================================================
+              # E. 打包 .deb 文件
+              # ============================================================
+              echo ">>> Packaging .deb file..."
+
+              # 定义包信息
+              PKG_NAME="rocketmq-client-cpp"
+              PKG_VERSION="2.2.0" # 根据实际版本号调整
+              ARCH="arm64"
+              INSTALL_DIR="/usr/local/${PKG_NAME}"
+
+              # 创建 deb 目录结构
+              mkdir -p ${PKG_NAME}_${PKG_VERSION}_${ARCH}/DEBIAN
+              mkdir -p ${PKG_NAME}_${PKG_VERSION}_${ARCH}${INSTALL_DIR}
+
+              # 复制编译产物 (假设 build.sh 输出在 output 或 bin/lib 目录)
+              # 注意：这里需要根据 build.sh 实际输出的路径进行调整
+              if [ -d "output/bin" ]; then
+                  cp -r output/bin ${PKG_NAME}_${PKG_VERSION}_${ARCH}${INSTALL_DIR}/
+              fi
+              if [ -d "output/lib" ]; then
+                  cp -r output/lib ${PKG_NAME}_${PKG_VERSION}_${ARCH}${INSTALL_DIR}/
+              fi
+              # 如果 build.sh 没有统一输出目录，可能需要手动拷贝 bin 和 lib
+              # cp -r bin ${PKG_NAME}_${PKG_VERSION}_${ARCH}${INSTALL_DIR}/
+              # cp -r lib ${PKG_NAME}_${PKG_VERSION}_${ARCH}${INSTALL_DIR}/
+
+              # 编写 control 文件
+              cat > ${PKG_NAME}_${PKG_VERSION}_${ARCH}/DEBIAN/control <<CONTROL
+              Package: ${PKG_NAME}
+              Version: ${PKG_VERSION}
+              Section: libs
+              Priority: optional
+              Architecture: ${ARCH}
+              Maintainer: Your Name <your@email.com>
+              Description: RocketMQ C++ Client Library for ARM64
+               Apache RocketMQ is a distributed messaging and streaming platform.
+              CONTROL
+
+              # 生成 md5sums (可选但推荐)
+              cd ${PKG_NAME}_${PKG_VERSION}_${ARCH}
+              find . -type f ! -regex './DEBIAN/.*' -exec md5sum {} + > DEBIAN/md5sums
+              cd ..
+
+              # 构建 deb 包
+              dpkg-deb --build ${PKG_NAME}_${PKG_VERSION}_${ARCH}
+
+              # 移动到输出目录
+              mv ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb /workspace/output/
+
+              echo ">>> Build finished successfully!"
+            EOF
+
+      # 4. 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: rocketmq-client-cpp-arm64-deb
-          path: output/*.deb
+          path: ${{ github.workspace }}/output/*.deb
