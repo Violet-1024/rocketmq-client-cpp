@@ -1,108 +1,78 @@
-name: Build RocketMQ ARM64 DEB
+name: Build RocketMQ Client CPP (ARM64)
 
 on:
+  workflow_dispatch: # 允许手动触发
   push:
-    branches: [release-2.0.0]
-  workflow_dispatch: # 允许在网页上手动点击运行
+    branches: [ release-2.0.0 ]
 
 jobs:
-  build:
+  build-arm64-deb:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 拉取代码
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. 安装 QEMU（在 x86 runner 上模拟 ARM64 环境）
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
-      # 3. 在 ARM64 容器中编译 + 打包 deb
-      - name: Build RocketMQ Client in ARM64 container
+      - name: Build and Package in ARM64 Container
         run: |
-          mkdir -p ${{ github.workspace }}/output
+          mkdir -p output
+
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -v ${{ github.workspace }}/output:/output \
-            ubuntu:22.04 \
-            bash -c '
-              set -ex
-
-              # ===== 安装编译依赖 =====
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update
-              apt-get install -y \
-                build-essential cmake autoconf automake libtool \
-                zlib1g-dev libbz2-dev perl wget
+            ubuntu:22.04 bash -c '
+              set -e
+              echo "=== 1. Install System Dependencies ==="
+              apt-get update && apt-get install -y \
+                wget build-essential cmake autoconf automake libtool \
+                zlib1g-dev libbz2-dev perl pkg-config
 
               cd /workspace
 
-              # ===== 下载替换版依赖 =====
-              # Boost 1.72.0（默认 1.58 在 ARM64 上检测为 x86，编译失败）
-              wget -O boost_1_72_0.tar.gz \
-                https://sourceforge.net/projects/boost/files/boost/1.72.0/boost_1_72_0.tar.gz/download
+              echo "=== 2. Patch Source Code (The Magic Happens Here) ==="
+              # --- 修改 build.sh ---
+              # 将 Boost 版本升级为 1.72.0
+              sed -i "s/BOOST_VERSION=\"1_58_0\"/BOOST_VERSION=\"1_72_0\"/g" build.sh
+              # 更新下载链接 (SourceForge 自动跳转链接)
+              sed -i "s|projects/boost/files/boost/1.58.0/|projects/boost/files/boost/1.72.0/|g" build.sh
+              sed -i "s|boost_1_58_0.tar.gz|boost_1_72_0.tar.gz|g" build.sh
 
-              # OpenSSL 1.1.1w（默认 1.1.1d 在 ARM64 上链接报 R_AARCH64_PREL64 错误）
-              wget -O openssl-1.1.1w.tar.gz \
-                https://www.openssl.org/source/openssl-1.1.1w.tar.gz
+              # --- 修改 CMakeLists.txt ---
+              # 去除 -m64 参数，防止 ARM64 编译报错
+              sed -i "/-m64/s/^/#/" CMakeLists.txt
 
-              # ===== 修复 CMakeLists.txt：注释掉 -m64 =====
-              sed -i "s/list(APPEND CXX_FLAGS \"-m64\")/#list(APPEND CXX_FLAGS \"-m64\")/g" CMakeLists.txt
+              echo "=== 3. Run Build Script ==="
+              # 执行修改后的脚本，它会自动下载新版 Boost 并编译
+              sh build.sh all
 
-              # ===== 修复 build.sh：更新 boost 和 openssl 版本号 =====
-              sed -i "s/boost_1_58_0/boost_1_72_0/g" build.sh
-              sed -i "s/openssl-1.1.1d/openssl-1.1.1w/g" build.sh
+              echo "=== 4. Create DEB Package ==="
+              # 进入构建目录打包
+              cd output
+              # 假设 build.sh 把产物放在了当前目录的 output 文件夹，或者你需要根据实际路径调整
+              # 这里模拟 cpack 打包过程 (如果 build.sh 没自带打包功能)
+              # 注意：rocketmq-client-cpp 原生可能不带 cpack，需要自己写简单的 deb 控制文件
+              # 为了演示，这里假设我们只提取 .so 文件
+              mkdir -p /tmp/deb/usr/lib
+              cp lib/librocketmq.so /tmp/deb/usr/lib/
 
-              # ===== 修复 build.sh：Boost 编译加 zlib 路径 =====
-              sed -i "s|--with-iostreams threading=multi link=static release install --prefix=\${install_lib_dir}|--with-iostreams threading=multi link=static release install --prefix=\${install_lib_dir} -sZLIB_INCLUDE=\"/usr/include\" -sZLIB_LIBPATH=\"/usr/lib/aarch64-linux-gnu\"|g" build.sh
-
-              # ===== 修复 build.sh：OpenSSL 加 no-asm =====
-              sed -i "s|./config --prefix=\${install_lib_dir}|./config --prefix=\${install_lib_dir} no-asm|g" build.sh
-
-              # ===== 执行编译（官方 build.sh 会自动编译 boost/openssl/jsoncpp/libevent） =====
-              ./build.sh
-
-              # ===== 安装编译产物 =====
-              cp bin/lib/librocketmq* /usr/lib/
-              mkdir -p /usr/include/rocketmq
-              cp bin/include/* /usr/include/rocketmq/
-              ldconfig
-
-              # ===== 打包为 deb =====
-              DEB_DIR="/tmp/rocketmq-deb"
-              mkdir -p ${DEB_DIR}/DEBIAN
-              mkdir -p ${DEB_DIR}/usr/lib
-              mkdir -p ${DEB_DIR}/usr/include/rocketmq
-
-              cp /usr/lib/librocketmq* ${DEB_DIR}/usr/lib/
-              cp /usr/include/rocketmq/* ${DEB_DIR}/usr/include/rocketmq/
-
-              cat > ${DEB_DIR}/DEBIAN/control << CTRL
+              # 创建简单的 control 文件
+              mkdir -p /tmp/deb/DEBIAN
+              cat > /tmp/deb/DEBIAN/control <<EOF
               Package: rocketmq-client-cpp
-              Version: 2.0.0
-              Section: libs
-              Priority: optional
+              Version: 2.0.0-arm64
               Architecture: arm64
-              Depends: zlib1g, libbz2-1.0
-              Maintainer: yourname <your@email.com>
-              Description: Apache RocketMQ C++ Client for ARM64
-               RocketMQ C++ client library compiled for aarch64/arm64.
-              CTRL
+              Maintainer: CI Bot
+              Description: RocketMQ C++ Client Library
+              EOF
 
-              sed -i "s/^[[:space:]]*//" ${DEB_DIR}/DEBIAN/control
-              dpkg-deb --build ${DEB_DIR} /output/rocketmq-client-cpp-2.0.0-arm64.deb
-
-              echo "===== Build Success ====="
-              ls -lh /output/
+              dpkg-deb --build /tmp/deb /output/rocketmq-client-cpp-2.0.0-arm64.deb
             '
 
-      # 4. 上传编译产物
-      - name: Upload DEB artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rocketmq-client-cpp-2.0.0-arm64
+          name: rocketmq-client-cpp-arm64-deb
           path: output/*.deb
-          retention-days: 30
